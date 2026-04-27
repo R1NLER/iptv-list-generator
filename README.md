@@ -59,7 +59,7 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-3. Abrir la lista generada:
+3. Abrir la lista generada, cambia localhost por la dirección de tu host:
 
 - http://localhost:8080/lista.m3u
 
