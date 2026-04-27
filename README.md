@@ -1,4 +1,4 @@
-# IPTV lista-m3u
+# IPTV Generador de listas
 
 Servicio ligero para descargar una lista M3U remota, reemplazar un texto dentro del contenido y publicarla por HTTP.
 
