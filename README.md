@@ -120,3 +120,11 @@ http://127.0.0.1:6878/stream/canal1
 ```
 
 En ese ejemplo, si SEARCH_TEXT=127.0.0.1:6878 y REPLACE_TEXT=mi-dominio.com:9000, la URL final quedará reemplazada automáticamente.
+
+Ejemplo de salida generado por app.py:
+
+```m3u
+#EXTM3U
+#EXTINF:-1 tvg-id="canal1" tvg-name="Canal 1",Canal 1
+http://192.168.1.5:8000/stream/canal1
+```
