@@ -1,0 +1,2 @@
+# Crontab definido para ejecutarse cada 5 minutos, ajustar según necesidad.
+*/5 * * * * cd /app && python app.py >> /var/log/cron.log 2>&1

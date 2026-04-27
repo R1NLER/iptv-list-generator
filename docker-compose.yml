@@ -1,0 +1,9 @@
+services:
+  lista-m3u:
+    build: .
+    container_name: lista-m3u
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8080:80"
