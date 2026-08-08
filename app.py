@@ -1,49 +1,84 @@
 import os
-import urllib.request
 from pathlib import Path
 
-# La url definida en el .env
+from playwright.sync_api import sync_playwright
+
+# URL remota desde la que se descarga la lista M3U. Obligatoria.
 URL = os.environ["URL"]
-# Se busca el texto SEARCH_TEXT si es definido en el .env, si no se usa un valor por defecto (127.0.0.1:6878) suele ser el valor usado para listas de IPTV que usan Acestream
+# Texto a buscar para reemplazar. Opcional (por defecto 127.0.0.1:6878).
 SEARCH_TEXT = os.getenv("SEARCH_TEXT", "127.0.0.1:6878")
-# Se reemplaza por el definido en el .env para ajustarlo a las necesidades de usuario.
+# Texto que sustituirá el valor de SEARCH_TEXT dentro de la lista. Obligatoria.
 REPLACE_TEXT = os.environ["REPLACE_TEXT"]
-# Ruta dentro del contenedor donde se guarda la lista creada, se publicará por NGINX en el puerto 80 del contenedor.
+# Ruta donde se guarda la lista final, servida por Nginx en /htdocs.
 OUTPUT = Path("/htdocs/lista.m3u")
+
+# Tiempo máximo (ms) de espera a que el Service Worker de IPFS resuelva el
+# contenido. La fuente configurada (inbrowser.link) no sirve el archivo por
+# HTTP simple: solo lo resuelve un navegador ejecutando su JavaScript, así
+# que usamos un Chromium headless real en vez de una petición HTTP directa.
+TIMEOUT_MS = 60_000
+
+
+def _es_lista_valida(contenido: str) -> bool:
+    return contenido.lstrip()[:20].upper().startswith("#EXTM3U")
+
+
+def obtener_contenido_m3u(url: str) -> str:
+    """Abre la URL en un Chromium headless (para que el Service Worker de
+    IPFS se ejecute igual que en un navegador real) y devuelve el
+    contenido de la lista m3u, ya sea capturando una descarga de archivo
+    o leyendo el texto resultante en la página."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        contexto = browser.new_context(accept_downloads=True)
+        pagina = contexto.new_page()
+
+        contenido = None
+
+        try:
+            with pagina.expect_download(timeout=TIMEOUT_MS) as info_descarga:
+                pagina.goto(url, timeout=TIMEOUT_MS, wait_until="commit")
+            descarga = info_descarga.value
+            ruta_temp = "/tmp/lista_descargada.m3u"
+            descarga.save_as(ruta_temp)
+            contenido = Path(ruta_temp).read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            print(f"Sin descarga automática ({e}); probando leer la página...")
+
+        if contenido is None or not _es_lista_valida(contenido):
+            try:
+                if pagina.url != url:
+                    pagina.goto(url, timeout=TIMEOUT_MS, wait_until="networkidle")
+                else:
+                    pagina.wait_for_load_state("networkidle", timeout=TIMEOUT_MS)
+                pagina.wait_for_function(
+                    "document.body && document.body.innerText && "
+                    "document.body.innerText.trim().toUpperCase().startsWith('#EXTM3U')",
+                    timeout=TIMEOUT_MS,
+                )
+                contenido = pagina.inner_text("body")
+            except Exception as e:
+                print(f"Tampoco se pudo leer el contenido de la página: {e}")
+
+        browser.close()
+
+        if contenido is None or not _es_lista_valida(contenido):
+            raise RuntimeError("No se obtuvo una lista m3u válida.")
+
+        return contenido
 
 
 def main():
-    """ 
-        Función principal que descarga la lista, reemplaza el texto y guarda el resultado en un archivo.
-            - Descarga la lista desde la URL definida usando urllib.request con un User-Agent personalizado.
-            - Reemplaza el texto SEARCH_TEXT por REPLACE_TEXT en el contenido descargado.
-            - Guarda el resultado en OUTPUT, creando los directorios necesarios si no existen.
-            - Imprime un mensaje de éxito o error según corresponda.
-
-    """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-    }
-
-    req = urllib.request.Request(URL, headers=headers)
-
+    print(f"Descargando lista desde: {URL}")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            content = resp.read().decode("utf-8", errors="replace")
+        contenido = obtener_contenido_m3u(URL)
     except Exception as e:
         print(f"Error descargando lista: {e}")
         return 1
 
-    data = content.replace(SEARCH_TEXT, REPLACE_TEXT)
-
+    data = contenido.replace(SEARCH_TEXT, REPLACE_TEXT)
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(data, encoding="utf-8")
-
     print(f"Lista actualizada en {OUTPUT}")
     return 0
 
