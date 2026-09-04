@@ -45,6 +45,24 @@ REPLACE_TEXT=tu-dominio-o-ip:puerto
 SEARCH_TEXT=127.0.0.1:6878
 ```
 
+Nota sobre IPFS:
+
+- A partir de esta versión se incluye un servicio `ipfs` en `docker-compose.yml` que arranca un gateway local y se publica en el host en el puerto `8081`.
+- Opciones para `URL` en el archivo `.env`:
+  - Para que `lista-m3u` use el gateway interno del servicio en la red Compose, usa:
+    `URL=http://ipfs:8080/ipns/<hash>/ruta/a/lista.m3u`
+  - Para apuntar al gateway expuesto en el host (útil desde tu navegador o si el gateway corre fuera de Compose), usa:
+    `URL=http://host.docker.internal:8081/ipns/<hash>/ruta/a/lista.m3u` (Windows / Docker Desktop)
+  - También puedes usar la IP o hostname del nodo que sirve el gateway:
+    `URL=http://192.168.x.y:8081/ipns/<hash>/ruta/a/lista.m3u`
+
+Cambios operativos importantes:
+
+- Si usas la dirección interna `http://ipfs:8080/...`, la resolución se hace dentro de la red de Compose y no depende del host.
+- Si apuntas al gateway del host (`:8081`), asegúrate de que el contenedor `lista-m3u` pueda resolver `host.docker.internal` (Docker Desktop en Windows lo hace por defecto).
+- Tras cambiar `URL` en `.env` debes reiniciar o forzar la actualización del servicio `lista-m3u` para que cargue la nueva variable (p. ej. `docker compose restart lista-m3u` o ejecutar `python /app/app.py` dentro del contenedor).
+
+
 ## Uso rápido
 
 1. Levantar el servicio:
