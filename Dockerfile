@@ -23,14 +23,15 @@ COPY nginx.conf /etc/nginx/nginx.conf
 COPY crontab /app/crontab
 COPY start.sh /start.sh
 
+# Eliminar posibles CRLF que Windows pueda haber introducido y dar permisos
+# Esto evita errores "no such file or directory" por shebang con \r,
+# y que cron descarte el crontab silenciosamente
+RUN sed -i 's/\r$//' /start.sh /app/crontab || true \
+    && chmod +x /start.sh
+
 # Registrar el crontab para el usuario root (equivalente a copiarlo en
 # /etc/crontabs/root en Alpine, pero a la manera de Debian)
 RUN crontab /app/crontab
-
-# Eliminar posibles CRLF que Windows pueda haber introducido y dar permisos
-# Esto evita errores "no such file or directory" por shebang con \r
-RUN sed -i 's/\r$//' /start.sh || true \
-    && chmod +x /start.sh
 
 # Exponer el puerto 80 para Nginx
 EXPOSE 80
