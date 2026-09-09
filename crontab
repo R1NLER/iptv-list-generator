@@ -1,2 +1,5 @@
 # Crontab definido para ejecutarse cada 5 minutos, ajustar según necesidad.
-*/5 * * * * cd /app && python app.py >> /var/log/cron.log 2>&1
+# Se carga /app/env.sh porque cron no hereda las variables de entorno del
+# contenedor (URL, SEARCH_TEXT, REPLACE_TEXT), y se usa la ruta absoluta de
+# python porque el PATH de cron no incluye /usr/local/bin.
+*/5 * * * * . /app/env.sh && cd /app && /usr/local/bin/python app.py >> /var/log/cron.log 2>&1

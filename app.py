@@ -1,4 +1,6 @@
 import os
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -13,17 +15,31 @@ REPLACE_TEXT = os.environ["REPLACE_TEXT"]
 OUTPUT = Path("/htdocs/lista.m3u")
 
 # Tiempo máximo (ms) de espera a que el Service Worker de IPFS resuelva el
-# contenido. La fuente configurada (inbrowser.link) no sirve el archivo por
-# HTTP simple: solo lo resuelve un navegador ejecutando su JavaScript, así
-# que usamos un Chromium headless real en vez de una petición HTTP directa.
+# contenido, usado solo como último recurso para fuentes tipo inbrowser.link
+# que no sirven el archivo por HTTP simple y requieren un navegador real.
 TIMEOUT_MS = 60_000
+# Tiempo máximo (s) para la petición HTTP directa.
+HTTP_TIMEOUT_S = 30
 
 
 def _es_lista_valida(contenido: str) -> bool:
     return contenido.lstrip()[:20].upper().startswith("#EXTM3U")
 
 
-def obtener_contenido_m3u(url: str) -> str:
+def obtener_contenido_m3u_http(url: str) -> str | None:
+    """Intenta descargar la lista con una petición HTTP simple, válido para
+    gateways (p. ej. tu propio nodo IPFS) que sirven el archivo directamente."""
+    try:
+        with urllib.request.urlopen(url, timeout=HTTP_TIMEOUT_S) as resp:
+            contenido = resp.read().decode("utf-8", errors="replace")
+    except (urllib.error.URLError, TimeoutError, ValueError) as e:
+        print(f"Petición HTTP directa falló ({e}); probando con navegador...")
+        return None
+
+    return contenido if _es_lista_valida(contenido) else None
+
+
+def obtener_contenido_m3u_navegador(url: str) -> str:
     """Abre la URL en un Chromium headless (para que el Service Worker de
     IPFS se ejecute igual que en un navegador real) y devuelve el
     contenido de la lista m3u, ya sea capturando una descarga de archivo
@@ -66,6 +82,15 @@ def obtener_contenido_m3u(url: str) -> str:
             raise RuntimeError("No se obtuvo una lista m3u válida.")
 
         return contenido
+
+
+def obtener_contenido_m3u(url: str) -> str:
+    """Prueba primero una petición HTTP directa (rápida) y, si no da una
+    lista válida, recurre a un navegador headless real."""
+    contenido = obtener_contenido_m3u_http(url)
+    if contenido is not None:
+        return contenido
+    return obtener_contenido_m3u_navegador(url)
 
 
 def main():
