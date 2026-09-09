@@ -6,25 +6,31 @@ El proyecto usa:
 
 - Python + Playwright (Chromium headless) para descargar y transformar la lista.
 - Cron para ejecutar la actualización cada 5 minutos.
-- Nginx para servir el archivo final.
-- Docker Compose para orquestar todo en un solo contenedor.
+- FastAPI + Uvicorn para la página de gestión manual de una lista de emergencia (`/manual`).
+- Nginx para servir los archivos finales y hacer proxy hacia el backend de `/manual`.
+- IPFS (kubo) como servicio propio en Docker Compose, con su propio gateway y volumen persistente.
+- Docker Compose para orquestar todo.
 
 ## Flujo de funcionamiento
 
 1. Al iniciar el contenedor, se ejecuta una descarga inicial de la lista.
 2. El script guarda el resultado en /htdocs/lista.m3u.
 3. Cron vuelve a ejecutar el proceso cada 5 minutos.
-4. Nginx expone el directorio /htdocs por el puerto 80 del contenedor.
-5. Docker Compose publica ese puerto en el host como 8000.
+4. En paralelo se levanta el backend de gestión manual (Uvicorn, puerto interno 5000), accesible en `/manual`.
+5. Nginx expone el directorio /htdocs (incluye lista.m3u y emergency.m3u) y hace proxy de `/manual` hacia el backend, todo por el puerto 80 del contenedor.
+6. Docker Compose publica ese puerto en el host (ver `docker-compose.yml`).
+7. Antes de la primera descarga, `start.sh` espera unos segundos para dar margen a que el daemon de IPFS termine de arrancar; si aun así falla, cron reintenta cada 5 minutos.
 
 ## Estructura del proyecto
 
-- app.py: Descarga la lista, reemplaza texto y genera el archivo final.
+- app.py: Descarga la lista remota, reemplaza texto y genera /htdocs/lista.m3u.
+- manual_app.py: App FastAPI que sirve `/manual` (alta/edición/borrado de canales) y regenera /htdocs/emergency.m3u.
 - crontab: Programación de actualización periódica (cada 5 minutos).
-- Dockerfile: Imagen base con Python, cron, nginx y Playwright/Chromium.
-- docker-compose.yml: Servicio y publicación del puerto.
-- nginx.conf: Configuración del servidor HTTP para servir /htdocs.
-- start.sh: Arranque de descarga inicial, cron y nginx.
+- Dockerfile: Imagen base con Python, cron, nginx, Playwright/Chromium y FastAPI/Uvicorn.
+- docker-compose.yml: Servicios (`lista-m3u`, `ipfs`), volúmenes y publicación de puertos.
+- nginx.conf: Configuración del servidor HTTP para servir /htdocs y el proxy de `/manual`.
+- start.sh: Arranque de descarga inicial, cron, backend de `/manual` y nginx.
+- example.m3u: Ejemplo de referencia del formato de lista m3u (con grupos) usado como guía de estilo.
 
 ## Variables de entorno
 
@@ -43,7 +49,13 @@ Ejemplo de .env:
 URL=https://tu-fuente/lista.m3u
 REPLACE_TEXT=tu-dominio-o-ip:puerto
 SEARCH_TEXT=127.0.0.1:6878
+TZ=Europe/Madrid
 ```
+
+Nota sobre TZ:
+
+- Controla la zona horaria del contenedor `lista-m3u` (y `ipfs`), usada por ejemplo para que las fechas mostradas en el índice de Nginx (`autoindex_localtime`) sean correctas en vez de UTC.
+- Se define directamente en `docker-compose.yml` (`environment: TZ=...`), no hace falta añadirla al `.env` salvo que quieras cambiar el valor por defecto (`Europe/Madrid`).
 
 Nota sobre IPFS:
 
@@ -62,7 +74,6 @@ Cambios operativos importantes:
 - Si apuntas al gateway del host (`:8081`), asegúrate de que el contenedor `lista-m3u` pueda resolver `host.docker.internal` (Docker Desktop en Windows lo hace por defecto).
 - Tras cambiar `URL` en `.env` debes reiniciar o forzar la actualización del servicio `lista-m3u` para que cargue la nueva variable (p. ej. `docker compose restart lista-m3u` o ejecutar `python /app/app.py` dentro del contenedor).
 
-
 ## Uso rápido
 
 1. Levantar el servicio:
@@ -71,21 +82,19 @@ Cambios operativos importantes:
 docker compose up -d --build
 ```
 
-> El `--build` es importante tras actualizar el proyecto: la imagen cambió de base (ver [Notas de la versión actual](#notas-de-la-versión-actual)) e incluye la instalación de Chromium, por lo que la primera construcción tarda más y pesa más que antes.
-
 2. Ver logs:
 
 ```bash
 docker compose logs -f
 ```
 
-3. Abrir la lista generada, cambia localhost por la dirección de tu host:
+3. Abrir la lista generada, cambia localhost por la dirección de tu host (y el puerto si lo cambiaste en `docker-compose.yml`):
 
-- http://localhost:8080/lista.m3u
+- http://localhost/lista.m3u
 
 También puedes abrir el índice de archivos:
 
-- http://localhost:8080/
+- http://localhost/
 
 4. Detener el servicio:
 
@@ -93,14 +102,17 @@ También puedes abrir el índice de archivos:
 docker compose down
 ```
 
+> Para además borrar los volúmenes (datos de IPFS y de la lista de emergencia) usa `docker compose down -v`. Es destructivo: perderás el repo IPFS y los canales guardados en `/manual`, así que úsalo solo cuando quieras limpiar todo de verdad.
+
 ## Comportamiento del script
 
 El script principal:
 
-- Abre la URL configurada en un navegador Chromium headless (Playwright), en vez de hacer una petición HTTP simple.
+- Primero intenta una petición HTTP simple (`urllib`) contra la URL configurada; si devuelve una lista m3u válida (empieza por `#EXTM3U`), la usa directamente sin abrir navegador.
+- Solo si esa petición simple falla o no da una lista válida, recurre a un navegador Chromium headless (Playwright).
 - Esto es necesario porque la fuente actual sirve el contenido a través de un gateway IPFS que requiere ejecutar JavaScript en el cliente (Service Worker) para resolver el archivo real; una petición HTTP tradicional solo devuelve una página de carga, no la lista.
-- Captura el contenido de dos formas, según cómo responda el gateway: interceptando una descarga de archivo automática, o leyendo el texto ya resuelto en la página.
-- Tiene un margen de hasta 60 segundos de espera (más que una descarga HTTP normal, porque el contenido se resuelve vía red P2P/Service Worker, no por una respuesta HTTP directa).
+- Con Playwright, captura el contenido de dos formas, según cómo responda el gateway: interceptando una descarga de archivo automática, o leyendo el texto ya resuelto en la página.
+- Tiene un margen de hasta 60 segundos de espera con Playwright (más que una petición HTTP normal, porque el contenido se resuelve vía red P2P/Service Worker, no por una respuesta HTTP directa).
 - Valida que el contenido obtenido sea realmente una lista m3u (debe empezar por `#EXTM3U`) antes de darlo por válido.
 - Si hay error, lo muestra en consola y termina con código de error.
 - Siempre escribe el resultado en /htdocs/lista.m3u cuando la descarga funciona.
@@ -111,10 +123,11 @@ Resumen de lógica de app.py:
 
 1. Lee variables de entorno obligatorias: URL y REPLACE_TEXT.
 2. Lee SEARCH_TEXT (si no existe, usa 127.0.0.1:6878).
-3. Abre la URL con Chromium headless (Playwright) y espera a que se resuelva el contenido real, capturando una descarga de archivo o leyendo el texto de la página.
-4. Comprueba que el contenido obtenido sea una lista m3u válida (empieza por `#EXTM3U`).
-5. Aplica un reemplazo global: SEARCH_TEXT -> REPLACE_TEXT.
-6. Guarda el resultado final en /htdocs/lista.m3u.
+3. Intenta una petición HTTP simple contra la URL; si el contenido es una lista m3u válida, la usa directamente.
+4. Si la petición simple falla o no da una lista válida, abre la URL con Chromium headless (Playwright) y espera a que se resuelva el contenido real, capturando una descarga de archivo o leyendo el texto de la página.
+5. Comprueba que el contenido obtenido sea una lista m3u válida (empieza por `#EXTM3U`).
+6. Aplica un reemplazo global: SEARCH_TEXT -> REPLACE_TEXT.
+7. Guarda el resultado final en /htdocs/lista.m3u.
 
 Puntos clave para que funcione bien:
 
@@ -163,3 +176,26 @@ Esto trae dos cambios relevantes a nivel de infraestructura:
 - **Tamaño de la imagen y tiempos de build/arranque**: al incluir un navegador completo, la imagen es notablemente más pesada y la primera descarga tarda más que con el método HTTP simple anterior.
 
 Si en el futuro la fuente configurada vuelve a servir el archivo m3u directamente por HTTP (sin necesitar JavaScript), este script seguiría funcionando igual sin cambios: Playwright captura tanto una descarga de archivo directa como el contenido resuelto vía JS, así que es compatible con ambos escenarios — simplemente sería más lento que una petición HTTP pura para ese caso. El código que usaba `urllib` (versión anterior) sigue disponible en el historial de commits de este repositorio por si se quisiera volver a un método más ligero en caso de que la fuente cambie de comportamiento.
+
+## Lista de emergencia manual (/manual)
+
+Además de la lista principal (generada automáticamente desde `URL`), el proyecto incluye una segunda lista, `emergency.m3u`, que se gestiona a mano desde una página web:
+
+- URL: `http://localhost/manual` (mismo host/puerto que el resto del servicio).
+- Permite añadir, editar y eliminar canales (nombre + hash).
+- Cada cambio regenera por completo `/htdocs/emergency.m3u`, sin grupos, solo `#EXTM3U` + un `#EXTINF`/URL por canal.
+- La URL de stream de cada canal se construye como `http://{REPLACE_TEXT}/ace/getstream?id={hash}`, reutilizando la misma variable `REPLACE_TEXT` del `.env` que usa `app.py`.
+- Los canales se guardan en `/app/data/channels.json`, sobre el volumen `emergency-data` (persiste aunque el contenedor se recree).
+
+Detalle técnico:
+
+- El backend es una app FastAPI (`manual_app.py`) servida por Uvicorn en `127.0.0.1:5000` dentro del contenedor.
+- Nginx expone esa app públicamente vía `proxy_pass` en la ruta `/manual` (ver `nginx.conf`).
+- La lista resultante se sirve como cualquier archivo estático: `http://localhost/emergency.m3u`.
+
+## Resiliencia de arranque (IPFS)
+
+Para evitar que la primera descarga falle por "connection refused" cuando el daemon de IPFS aún no está listo (aunque su contenedor ya haya arrancado, ya que `depends_on` solo espera a que el contenedor inicie, no a que el daemon esté operativo):
+
+- `start.sh` añade un margen (`sleep`) antes de la primera descarga, como colchón para el bootstrap del daemon/resolución de IPNS.
+- Si aun así la primera descarga falla, cron reintenta automáticamente cada 5 minutos hasta que IPFS esté disponible.
