@@ -10,15 +10,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         cron \
     && rm -rf /var/lib/apt/lists/*
 
-# Crear directorios necesarios para Nginx
-RUN mkdir -p /app /htdocs /run/nginx
+# Crear directorios necesarios para Nginx y para los datos de la lista de emergencia
+RUN mkdir -p /app /htdocs /run/nginx /app/data
 
-# Instalar Playwright y su navegador Chromium (con dependencias de sistema)
-RUN pip install --no-cache-dir playwright \
+# Instalar Playwright y su navegador Chromium (con dependencias de sistema),
+# y FastAPI/Uvicorn para la página de gestión manual (/manual)
+RUN pip install --no-cache-dir playwright fastapi "uvicorn[standard]" python-multipart \
     && python3 -m playwright install --with-deps chromium
 
 # Cargar configuración de inicio del contenedor y configuración de Nginx, Crond, y la aplicación Flask
 COPY app.py /app/app.py
+COPY manual_app.py /app/manual_app.py
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY crontab /app/crontab
 COPY start.sh /start.sh

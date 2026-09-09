@@ -8,9 +8,11 @@ services:
     env_file:
       - .env
     ports:
-      - "8080:80"
+      - "80:80"
     depends_on:
       - ipfs
+    volumes:
+      - emergency-data:/app/data
 
   ipfs:
     image: ipfs/kubo:release
@@ -25,3 +27,4 @@ services:
 
 volumes:
   ipfs-data:
+  emergency-data:
